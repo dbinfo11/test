@@ -31,7 +31,7 @@ HTML = """
     table { border-collapse: collapse; width: 100%; margin-top: 14px; }
     th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
     th { background: #f5f5f5; position: sticky; top: 0; }
-    #status { margin-top: 10px; color: #333; }
+    #status { margin-top: 10px; color: #333; white-space: pre-wrap; }
     .small { color:#666; font-size: 13px; margin-top: 6px; }
   </style>
 </head>
@@ -76,15 +76,14 @@ async function scan(){
     const text = await res.text();
 
     let data = null;
-    try {
-      data = JSON.parse(text);
-    } catch(e) {
-      status.innerText = "서버 응답 파싱 오류";
-      return;
-    }
+    try { data = JSON.parse(text); } catch(e) { data = null; }
 
     if(!res.ok){
-      status.innerText = "오류: " + (data?.error || text);
+      if (data) {
+        status.innerText = "오류: " + JSON.stringify(data, null, 2);
+      } else {
+        status.innerText = "오류: " + text;
+      }
       return;
     }
 
@@ -118,11 +117,18 @@ def home():
 
 
 def get_json(url, timeout=10):
-    r = requests.get(url, timeout=timeout)
+    # Render 같은 환경에서 봇차단/응답 차이를 줄이기 위해 UA 추가
+    headers = {"User-Agent": "Mozilla/5.0 (BinanceVolScanner)"}
+    try:
+        r = requests.get(url, timeout=timeout, headers=headers)
+    except Exception as e:
+        return 0, {"error": f"request_exception: {repr(e)}"}
+
     try:
         return r.status_code, r.json()
     except Exception:
-        return r.status_code, None
+        # JSON이 아니면 text라도 반환
+        return r.status_code, {"error": f"non_json_response: {r.text[:300]}", "status_code": r.status_code}
 
 
 def calc_from_candle(c):
@@ -185,10 +191,13 @@ def scan(request: Request, threshold: float = Query(3.0, ge=0.0, le=100.0)):
     if cached and (now - cached["ts"] <= CACHE_TTL_SEC):
         return cached["data"]
 
-    # 티커 조회
-    _, tickers = get_json(f"{BASE_URL}/fapi/v1/ticker/24hr", timeout=10)
+    # 티커 조회 (여기서 실패 상세를 그대로 내려줌)
+    code, tickers = get_json(f"{BASE_URL}/fapi/v1/ticker/24hr", timeout=10)
     if not isinstance(tickers, list):
-        return JSONResponse(status_code=502, content={"error": "바이낸스 티커 응답 오류"})
+        return JSONResponse(
+            status_code=502,
+            content={"error": "바이낸스 티커 응답 오류", "http_status": code, "detail": tickers}
+        )
 
     symbols = []
     for t in tickers:
